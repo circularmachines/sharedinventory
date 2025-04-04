@@ -1,0 +1,7 @@
+atproto==0.0.59
+python-dotenv==1.0.0
+schedule==1.2.0
+pymongo==4.5.0
+pydantic==2.4.2
+pillow==10.0.1
+requests==2.31.0
