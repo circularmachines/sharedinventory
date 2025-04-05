@@ -1,0 +1,51 @@
+{
+  "metadata": {
+    "video_id": "1743888817_video",
+    "filename": "1743888817_video.mp3",
+    "filepath": "/home/johan/code/bot-python/data/processed_videos/audio/1743888817_video.mp3",
+    "language": "sv",
+    "duration": 4.64
+  },
+  "text": "Testing, testing, testing, testing, testing.",
+  "segments": [
+    {
+      "text": " Testing, testing, testing, testing, testing.",
+      "start": 0.0,
+      "end": 4.159999847412109,
+      "duration": 4.16
+    }
+  ],
+  "words": [
+    {
+      "text": "Testing",
+      "start": 0.0,
+      "end": 1.940000057220459,
+      "duration": 1.94
+    },
+    {
+      "text": "testing",
+      "start": 2.5,
+      "end": 2.5,
+      "duration": 0.0
+    },
+    {
+      "text": "testing",
+      "start": 3.1600000858306885,
+      "end": 3.1600000858306885,
+      "duration": 0.0
+    },
+    {
+      "text": "testing",
+      "start": 3.5999999046325684,
+      "end": 3.5999999046325684,
+      "duration": 0.0
+    },
+    {
+      "text": "testing",
+      "start": 4.159999847412109,
+      "end": 4.159999847412109,
+      "duration": 0.0
+    }
+  ],
+  "transcript_path": "data/processed_videos/transcripts/1743888817_video_transcript.json"
+}
