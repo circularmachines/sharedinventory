@@ -16,7 +16,7 @@ get_mentions.py
 - input:  BSKY_BOT_USERNAME and BSKY_BOT_PASSWORD from .env
 - output: list of URI for posts that mentions bot
 
-unprocessed_mentions.py
+unprocessed_mentions.py 
 - input: list of URI for posts
 - output: list of unprocessed posts
 
@@ -24,7 +24,7 @@ get_post_thread.py:
 - input: post URI
 - output: complete thread of post URI with how they relate
 
-check_media.py:
+check_media.py: 
 - input: post URI
 - output: media type
 
@@ -35,3 +35,19 @@ download_video.py
 process_video.py:
 - input: video path
 - output: frame paths, and transcription path
+
+compose_ai_prompt.py:
+- input: text, images, transcriptions, video frames
+- output: list of messages to be sent to AI
+
+ai_api_call.py:
+- input: list of messages
+- output: structured ai output
+
+make_bsky_post.py:
+#TBD
+
+add_to_database.py
+#TBD
+
+

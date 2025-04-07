@@ -162,7 +162,8 @@ class VideoProcessor:
                         'text': segment.text,
                         'start': segment.start,
                         'end': segment.end,
-                        'duration': round(segment.end - segment.start, 3)
+                        'duration': round(segment.end - segment.start, 3),
+                        'frames': []  # Will be populated after frame extraction
                     }
                     segments_data.append(segment_data)
             
@@ -192,7 +193,7 @@ class VideoProcessor:
             self.logger.error(f"Error transcribing audio: {str(e)}")
             return None
 
-    def extract_frames(self, video_path: str, transcript: Optional[Dict[str, Any]] = None) -> List[str]:
+    def extract_frames(self, video_path: str, transcript: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Extract key frames from video"""
         try:
             self.logger.info(f"Extracting frames from video: {video_path}")
@@ -206,7 +207,7 @@ class VideoProcessor:
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
                 self.logger.error(f"Could not open video: {video_path}")
-                return []
+                return {"frame_paths": [], "segment_frames": []}
             
             # Get video properties
             fps = cap.get(cv2.CAP_PROP_FPS)
@@ -216,27 +217,43 @@ class VideoProcessor:
             self.logger.info(f"Video properties: {frame_count} frames, {fps} fps, {duration:.2f}s duration")
             
             frame_paths = []
+            segment_frames = []  # Store frame info with segment index and timestamp
             
             # If we have a transcript with segments, use those timestamps for keyframes
             if transcript and "segments" in transcript and transcript["segments"]:
                 self.logger.info(f"Extracting frames based on {len(transcript['segments'])} transcript segments")
                 
                 for i, segment in enumerate(transcript["segments"]):
-                    if "start" in segment:
-                        time_sec = segment["start"]
+                    if "start" in segment and "end" in segment:
+                        # Calculate middle point of the segment
+                        start_time = segment["start"]
+                        end_time = segment["end"]
+                        middle_time = start_time + (end_time - start_time) / 2
                         
-                        # Set position in video
-                        cap.set(cv2.CAP_PROP_POS_MSEC, time_sec * 1000)
+                        self.logger.debug(f"Segment {i}: start={start_time:.2f}s, end={end_time:.2f}s, middle={middle_time:.2f}s")
+                        
+                        # Set position in video to middle of segment
+                        cap.set(cv2.CAP_PROP_POS_MSEC, middle_time * 1000)
                         
                         # Read the frame
                         success, frame = cap.read()
                         
                         if success:
                             # Save the frame
-                            frame_path = os.path.join(frames_dir, f"frame_{i:03d}_{time_sec:.2f}s.jpg")
+                            frame_path = os.path.join(frames_dir, f"frame_{i:03d}_{middle_time:.2f}s.jpg")
                             cv2.imwrite(frame_path, frame)
                             frame_paths.append(frame_path)
-                            self.logger.debug(f"Saved frame at {time_sec:.2f}s to {frame_path}")
+                            
+                            # Store the frame with segment info
+                            segment_frames.append({
+                                "segment_index": i,
+                                "time_sec": middle_time,
+                                "frame_path": frame_path
+                            })
+                            
+                            self.logger.debug(f"Saved frame at middle of segment ({middle_time:.2f}s) to {frame_path}")
+                        else:
+                            self.logger.warning(f"Failed to extract frame at {middle_time:.2f}s for segment {i}")
             else:
                 # No transcript segments, extract frames at regular intervals (10 seconds)
                 interval = 10  # seconds
@@ -254,17 +271,25 @@ class VideoProcessor:
                         frame_path = os.path.join(frames_dir, f"frame_{time_sec//interval:03d}_{time_sec}s.jpg")
                         cv2.imwrite(frame_path, frame)
                         frame_paths.append(frame_path)
+                        
+                        # Store the frame with time info
+                        segment_frames.append({
+                            "segment_index": -1,  # No specific segment
+                            "time_sec": time_sec,
+                            "frame_path": frame_path
+                        })
+                        
                         self.logger.debug(f"Saved frame at {time_sec}s to {frame_path}")
             
             # Release the video capture
             cap.release()
             
             self.logger.info(f"Extracted {len(frame_paths)} frames from video")
-            return frame_paths
+            return {"frame_paths": frame_paths, "segment_frames": segment_frames}
             
         except Exception as e:
             self.logger.error(f"Error extracting frames: {str(e)}")
-            return []
+            return {"frame_paths": [], "segment_frames": []}
 
     def process_video(self, video_path: str, extract_audio: bool = True, 
                      transcribe: bool = True, extract_frames: bool = True,
@@ -305,11 +330,44 @@ class VideoProcessor:
                 self.logger.info("Transcription skipped")
             
             # 3. Extract frames if requested
+            frame_data = {"frame_paths": [], "segment_frames": []}
             if extract_frames:
-                frame_paths = self.extract_frames(video_path, transcript)
-                result["frame_paths"] = frame_paths
+                frame_data = self.extract_frames(video_path, transcript)
+                result["frame_paths"] = frame_data["frame_paths"]
             else:
                 self.logger.info("Frame extraction skipped")
+            
+            # 4. Update transcript with frame information
+            if transcript and frame_data["segment_frames"] and "segments" in transcript:
+                self.logger.info("Integrating frame information into transcript segments")
+                
+                # Associate frames with segments
+                for frame_info in frame_data["segment_frames"]:
+                    segment_index = frame_info["segment_index"]
+                    
+                    # Skip frames not associated with a specific segment
+                    if segment_index == -1:
+                        continue
+                    
+                    # Make sure segment index is within range
+                    if segment_index < len(transcript["segments"]):
+                        # Add frame to segment
+                        if "frames" not in transcript["segments"][segment_index]:
+                            transcript["segments"][segment_index]["frames"] = []
+                            
+                        transcript["segments"][segment_index]["frames"].append({
+                            "path": frame_info["frame_path"],
+                            "time": frame_info["time_sec"]
+                        })
+                
+                # Save the updated transcript
+                if transcript.get("transcript_path"):
+                    try:
+                        with open(transcript["transcript_path"], 'w') as f:
+                            json.dump(transcript, f, indent=2)
+                        self.logger.info("Updated transcript with frame information")
+                    except Exception as e:
+                        self.logger.error(f"Error saving updated transcript: {str(e)}")
             
             self.logger.info(f"Video processing completed for: {video_path}")
             return result
