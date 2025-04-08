@@ -1,0 +1,63 @@
+{
+  "metadata": {
+    "video_id": "1744119329_video",
+    "filename": "1744119329_video.mp3",
+    "filepath": "NA",
+    "language": "en",
+    "duration": 4.85
+  },
+  "text": "Here we have bongo drums. Hurray!",
+  "segments": [
+    {
+      "text": " Here we have bongo drums. Hurray!",
+      "start": 0.0,
+      "end": 2.6600000858306885,
+      "duration": 2.66,
+      "frames": [
+        {
+          "path": "examples/frame_000_1.33s.jpg",
+          "time": 1.3300000429153442
+        }
+      ]
+    }
+  ],
+  "words": [
+    {
+      "text": "Here",
+      "start": 0.0,
+      "end": 0.800000011920929,
+      "duration": 0.8
+    },
+    {
+      "text": "we",
+      "start": 0.800000011920929,
+      "end": 0.9200000166893005,
+      "duration": 0.12
+    },
+    {
+      "text": "have",
+      "start": 0.9200000166893005,
+      "end": 1.059999942779541,
+      "duration": 0.14
+    },
+    {
+      "text": "bongo",
+      "start": 1.059999942779541,
+      "end": 1.3600000143051147,
+      "duration": 0.3
+    },
+    {
+      "text": "drums",
+      "start": 1.3600000143051147,
+      "end": 1.899999976158142,
+      "duration": 0.54
+    },
+    {
+      "text": "Hurray",
+      "start": 2.4200000762939453,
+      "end": 2.6600000858306885,
+      "duration": 0.24
+    }
+  ],
+  "transcript_path": "/home/johan/code/bot-python/examples/1744119329_video_transcript.json"
+}

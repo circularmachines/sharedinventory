@@ -11,10 +11,103 @@ import logging
 import time
 import json
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from dotenv import load_dotenv
 from atproto import Client
 import requests
+from pathlib import Path
+
+# Setup data directories
+DATA_DIR = Path(os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))
+POSTS_DIR = DATA_DIR / "posts"
+
+def ensure_dirs():
+    """Ensure required directories exist"""
+    directories = [
+        POSTS_DIR / "threads",  # For thread JSON files
+      #  POSTS_DIR / "posts",    # For individual post JSON files
+    ]
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True)
+
+def save_post_json(post_info: Dict[str, Any]) -> bool:
+    """Save individual post information as JSON file"""
+    try:
+        if not post_info.get('uri'):
+            return False
+            
+        # Extract rkey and did from URI (format: at://did:plc:xxx/app.bsky.feed.post/rkey)
+        uri_parts = post_info['uri'].split('/')
+        did = uri_parts[2]
+        rkey = uri_parts[-1]
+        
+        # Create author directory within posts
+        author_dir = POSTS_DIR / "posts" / did
+        author_dir.mkdir(parents=True, exist_ok=True)
+        
+        file_path = author_dir / f"{rkey}.json"
+        
+        # Add metadata using timezone-aware datetime
+        post_info['saved_at'] = datetime.now(timezone.utc).isoformat()
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(post_info, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        logging.error(f"Failed to save post JSON: {str(e)}")
+        return False
+
+def save_thread_json(thread_structure: Dict[str, Any]) -> bool:
+    """Save complete thread as a single JSON file using parent URI as filename"""
+    try:
+        if not thread_structure:
+            return False
+            
+        # Find the topmost parent post's URI, or use main post if no parent exists
+        uri_to_use = None
+        if thread_structure.get('parent_posts') and len(thread_structure['parent_posts']) > 0:
+            # Get the first parent post (topmost parent)
+            uri_to_use = thread_structure['parent_posts'][0].get('uri')
+        
+        # Fallback to main post URI if no parent found
+        if not uri_to_use and thread_structure.get('main_post'):
+            uri_to_use = thread_structure['main_post'].get('uri')
+            
+        if not uri_to_use:
+            logging.error("No valid URI found for thread")
+            return False
+            
+        # Extract rkey and did from URI
+        uri_parts = uri_to_use.split('/')
+        did = uri_parts[2]
+        rkey = uri_parts[-1]
+        
+        # Create directory structure for threads
+        author_dir = POSTS_DIR / "threads" / did
+        author_dir.mkdir(parents=True, exist_ok=True)
+        
+        file_path = author_dir / f"{rkey}.json"
+
+        if file_path.exists():
+            logging.warning(f"Thread JSON file already exists: {file_path}")
+            return False
+        
+        # Add metadata
+        thread_data = {
+            'saved_at': datetime.now(timezone.utc).isoformat(),
+            'thread': thread_structure
+        }
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(thread_data, f, indent=2, ensure_ascii=False)
+            
+        logging.info(f"Saved thread to {file_path}")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Failed to save thread JSON: {str(e)}")
+        return False
 
 def setup_logging(debug=False):
     """Set up basic logging configuration"""
@@ -151,11 +244,31 @@ class BlueskyThreadFetcher:
             
             # Convert the JSON response to an object that matches the atproto client's response structure
             data = response.json()
+            if not data or 'thread' not in data:
+                self.logger.warning(f"Invalid response from public API: {data}")
+                return None
+                
             self.logger.debug("Successfully fetched thread from public API")
             
             # Convert to a compatible format with atproto client
-            from types import SimpleNamespace
-            return json.loads(json.dumps(data), object_hook=lambda d: SimpleNamespace(**d))
+            # Recursively convert all nested dictionaries to SimpleNamespace
+            def dict_to_namespace(d):
+                if isinstance(d, dict):
+                    for key, value in d.items():
+                        d[key] = dict_to_namespace(value)
+                    return SimpleNamespace(**d)
+                elif isinstance(d, list):
+                    return [dict_to_namespace(item) for item in d]
+                return d
+                
+            thread_obj = dict_to_namespace(data)
+            
+            # Validate the response structure
+            if not hasattr(thread_obj, 'thread') or not hasattr(thread_obj.thread, 'post'):
+                self.logger.warning("Response missing required thread structure")
+                return None
+                
+            return thread_obj
             
         except requests.exceptions.HTTPError as e:
             self.logger.error(f"HTTP error fetching thread from public API: {e}")
@@ -227,7 +340,7 @@ def extract_thread_structure(thread_response) -> Dict[str, Any]:
         'reply_posts': [],
         'thread_depth': 0,
         'has_parent': False,
-        'all_post_uris': []  # Added to store all post URIs in the thread
+        'all_post_uris': []
     }
     
     if not thread_response or not hasattr(thread_response, 'thread'):
@@ -242,7 +355,7 @@ def extract_thread_structure(thread_response) -> Dict[str, Any]:
             if main_post['uri']:
                 result['all_post_uris'].append(main_post['uri'])
             
-        # Extract parent posts (going up the thread)
+        # Extract parent posts
         current = main_thread
         while hasattr(current, 'parent') and current.parent:
             if hasattr(current.parent, 'post'):
@@ -258,7 +371,7 @@ def extract_thread_structure(thread_response) -> Dict[str, Any]:
         # Reverse parent posts to get chronological order
         result['parent_posts'].reverse()
         
-        # Extract reply posts (going down the thread)
+        # Extract reply posts
         if hasattr(main_thread, 'replies'):
             for reply in main_thread.replies:
                 if hasattr(reply, 'post'):
@@ -336,13 +449,23 @@ def print_thread_summary(thread_structure, detailed=False):
 def get_thread(uri: str, debug: bool = False) -> Dict[str, Any]:
     """Main function to retrieve a thread that can be called from external code"""
     logger = setup_logging(debug)
+    ensure_dirs()  # Ensure directories exist
+    load_dotenv()  # Load environment variables
     
     try:
-        # Create client without authentication for public posts
+        # Try with public API first
         client = BlueskyThreadFetcher()
-        
-        # Get post thread
         thread_response = client.get_post_thread(uri, depth=5, parent_height=20)
+        
+        # If public API fails, try with authentication
+        if not thread_response:
+            logger.info("Public API failed, trying with authentication...")
+            username = os.environ.get("BSKY_BOT_USERNAME")
+            password = os.environ.get("BSKY_BOT_PASSWORD")
+            
+            if username and password:
+                client = BlueskyThreadFetcher(username=username, password=password)
+                thread_response = client.get_post_thread(uri, depth=5, parent_height=20)
         
         if not thread_response:
             logger.error(f"No thread found for post URI: {uri}")
@@ -355,13 +478,18 @@ def get_thread(uri: str, debug: bool = False) -> Dict[str, Any]:
         # Extract thread structure
         thread_structure = extract_thread_structure(thread_response)
         
+        # Save the complete thread
+
+        
+        success = save_thread_json(thread_structure)
+        
         return {
-            'success': True,
-            'thread_structure': thread_structure
+            'success': success,
+            'thread_structure': thread_structure if success else None
         }
         
     except Exception as e:
-        logger.error(f"Error: {str(e)}")
+        logger.error(f"Error in get_thread: {str(e)}")
         return {
             'success': False,
             'error': str(e),
@@ -369,23 +497,30 @@ def get_thread(uri: str, debug: bool = False) -> Dict[str, Any]:
         }
 
 def main():
-    """Main function for direct script execution"""
+    """Main function to show thread details"""
     # Set up logging
     logger = setup_logging(debug=True)
+    ensure_dirs()  # Ensure directories exist
     
     # Get post URI from command line or use default example
-    post_uri = "at://did:plc:evocjxmi5cps2thb4ya5jcji/app.bsky.feed.post/3llxwrggehi26"
+    post_uri = "at://did:plc:evocjxmi5cps2thb4ya5jcji/app.bsky.feed.post/3lmc5zjc5ms23"
+            
     if len(sys.argv) > 1:
         post_uri = sys.argv[1]
     
-    # Fetch the thread
-    result = get_thread(post_uri, debug=True)
-    
-    if result['success']:
-        # Print thread details
-        print_thread_summary(result['thread_structure'], detailed=True)
-    else:
-        print(f"Error: {result.get('error', 'Unknown error')}")
+    try:
+        # Fetch the thread
+        result = get_thread(post_uri, debug=True)
+        
+        if result['success']:
+            # Print thread details
+            print_thread_summary(result['thread_structure'], detailed=True)
+        else:
+            print(f"Error: {result.get('error', 'Unknown error')}")
+            
+    except Exception as e:
+        logger.error(f"Error in main: {str(e)}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

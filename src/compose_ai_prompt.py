@@ -128,43 +128,38 @@ class AIPromptComposer:
             self.logger.info(f"Loading transcript from {transcript_path}")
             with open(transcript_path, 'r') as f:
                 transcript_data = json.load(f)
-            return transcript_data
+                
+            # Add the full transcript text as a user message
+            if "text" in transcript_data:
+                self.add_user_message(f"Video transcript: {transcript_data['text']}")
             
+            # Add individual segments with frames as separate messages
+            if "segments" in transcript_data:
+                for segment in transcript_data["segments"]:
+                    if "text" in segment:
+                        segment_text = segment["text"].strip()
+                        if not segment_text:
+                            continue
+                            
+                        # If segment has frames, add them with the text
+                        if "frames" in segment and segment["frames"]:
+                            frame_paths = [frame["path"] for frame in segment["frames"] if frame.get("path")]
+                            if frame_paths:
+                                timestamp = f"[{segment['start']:.1f}s - {segment['end']:.1f}s]"
+                                self.add_images_to_message(
+                                    frame_paths,
+                                    f"Segment {timestamp}: {segment_text}"
+                                )
+                        else:
+                            # If no frames, just add the text
+                            timestamp = f"[{segment['start']:.1f}s - {segment['end']:.1f}s]"
+                            self.add_user_message(f"Segment {timestamp}: {segment_text}")
+            
+            return transcript_data
+                
         except Exception as e:
             self.logger.error(f"Error loading transcript: {str(e)}")
             return None
-    
-    def add_frames_from_transcript(self, transcript_data: Dict[str, Any], 
-                                 frame_dir: str, max_frames: int = 5) -> None:
-        """Add key frames from transcript using frames stored in frame_dir"""
-        try:
-            if not transcript_data or "segments" not in transcript_data:
-                self.logger.warning("No segments found in transcript data")
-                return
-            
-            frame_path = Path(frame_dir)
-            if not frame_path.exists() or not frame_path.is_dir():
-                self.logger.error(f"Frame directory does not exist: {frame_dir}")
-                return
-            
-            # Process segments with frames
-            for segment in transcript_data["segments"]:
-                if "frames" in segment and segment["frames"]:
-                    segment_frames = []
-                    for frame_info in segment["frames"][:max_frames]:
-                        frame_path = frame_info["path"]
-                        if Path(frame_path).exists():
-                            segment_frames.append(frame_path)
-                    
-                    if segment_frames:
-                        segment_text = segment.get("text", "").strip()
-                        self.add_images_to_message(
-                            segment_frames,
-                            segment_text#f"Key frames from video ({len(segment_frames)} of {len(segment_frames)} total frames):\n{segment_text}"
-                        )
-            
-        except Exception as e:
-            self.logger.error(f"Error adding frames from transcript: {str(e)})")
     
     def get_messages(self) -> List[Dict[str, Any]]:
         """Get the complete list of messages"""
@@ -184,18 +179,16 @@ def load_system_message_from_file(file_path: str) -> Optional[str]:
 # 4. PRIMARY INTERFACE FUNCTION
 def compose_prompt(
     transcript_path: Optional[str] = None,
-    frame_dir: Optional[str] = None,
     system_message_path: Optional[str] = None,
     text_content: Optional[str] = None,
     image_paths: Optional[List[str]] = None,
     debug: bool = False
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    Compose an AI prompt from various inputs including transcripts, frames, and images.
+    Compose an AI prompt from various inputs including transcripts and images.
     
     Args:
         transcript_path: Path to the transcript JSON file
-        frame_dir: Directory containing video frames
         system_message_path: Path to system message file
         text_content: Additional text to include in the prompt
         image_paths: List of paths to additional images
@@ -220,17 +213,22 @@ def compose_prompt(
         if text_content:
             composer.add_user_message(text_content)
         
-        # Process transcript and frames
-        if transcript_path:
-            transcript_data = composer.add_transcript(transcript_path)
-            if transcript_data and frame_dir:
-                composer.add_frames_from_transcript(transcript_data, frame_dir)
+        # Process transcript
+        if transcript_path and os.path.exists(transcript_path):
+            composer.add_transcript(transcript_path)
         
         # Add individual images
         if image_paths:
-            composer.add_images_to_message(image_paths, "Additional images for analysis:")
+            for path in image_paths:
+                if os.path.exists(path):
+                    composer.add_images_to_message([path])
         
-        return composer.get_messages()
+        messages = composer.get_messages()
+        if not messages:
+            logger.warning("No messages were generated")
+            return None
+            
+        return messages
         
     except Exception as e:
         logger.error(f"Failed to compose prompt: {str(e)}")
@@ -244,20 +242,18 @@ def main():
 
     # Hardcoded example inputs
     system_message_path = "src/system_message.md"
-    transcript_path = "data/processed_videos/transcripts/1744099622_video_transcript.json"
-    frame_dir = "data/processed_videos/frames/1743888817_video"
+    transcript_path = "examples/1744119329_video_transcript.json"
 
     # Process the inputs
     messages = compose_prompt(
         system_message_path=system_message_path,
         transcript_path=transcript_path,
-        frame_dir=frame_dir,
         debug=True
     )
 
     if messages:
         # Save output to file
-        output_file = "data/processed_videos/prompt.json"
+        output_file = "data/prompt.json"
         with open(output_file, 'w') as f:
             json.dump(messages, f, indent=2)
         print(f"\nPrompt messages saved successfully to: {output_file}")

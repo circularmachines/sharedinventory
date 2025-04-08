@@ -4,7 +4,7 @@ add dependencies to requirements.txt then do pip install -r requirements.txt
 
 generally use latest possible version of dependencies
 
-keep main.py as clean as possible
+keep main.py simple, it should just be a monitor
 
 
 ## Function file format (src/*.py)
@@ -68,13 +68,13 @@ get_mentions.py
 - input:  BSKY_BOT_USERNAME and BSKY_BOT_PASSWORD from .env
 - output: list of URI for posts that mentions bot
 
-filter_mentions.py 
-- input: list of URI for posts
-- output: list of unprocessed posts
-
 get_post_thread.py:
 - input: post URI
-- output: complete thread of post URI with how they relate
+- output: complete thread of post URI with how they relate. include users
+
+filter_mentions.py 
+- input: 
+- output: list of unprocessed posts
 
 check_media.py: 
 - input: post URI
@@ -102,5 +102,8 @@ post_bsky_reply.py:
 
 add_to_database.py
 #TBD
+ 
+process.py #runs all functions above
 
-
+- input: call from main.py
+- output: N/A

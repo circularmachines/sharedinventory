@@ -2,7 +2,7 @@
 """
 Standalone script to filter unprocessed mentions from a list of post URIs.
 This script takes a list of post URIs and returns only those that have not been
-processed before based on a local tracking file.
+processed before based on saved post files and member status.
 """
 import os
 import sys
@@ -24,90 +24,184 @@ logger = logging.getLogger(__name__)
 # Define paths
 DATA_DIR = Path(os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))
 PROCESSED_FILE = DATA_DIR / "processed_mentions.json"
-
+POSTS_DIR = DATA_DIR / "posts"
+MEMBERS_FILE = DATA_DIR / "members.json"
 
 def setup_data_dir() -> bool:
     """Ensure the data directory exists"""
     try:
-        if not DATA_DIR.exists():
-            logger.info(f"Creating data directory: {DATA_DIR}")
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
+        POSTS_DIR.mkdir(parents=True, exist_ok=True)
         return True
     except Exception as e:
         logger.error(f"Failed to create data directory: {str(e)}")
         return False
 
-
-def load_processed_mentions() -> Set[str]:
-    """Load the set of previously processed mention URIs"""
-    processed = set()
-    
-    if not PROCESSED_FILE.exists():
-        logger.info(f"No processed mentions file found at {PROCESSED_FILE}")
-        return processed
-    
+def load_members() -> Dict[str, Any]:
+    """Load member information from members.json"""
+    members = {}
     try:
-        with open(PROCESSED_FILE, 'r') as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                processed = set(data)
-                logger.info(f"Loaded {len(processed)} processed mentions")
-            else:
-                logger.warning(f"Invalid format in {PROCESSED_FILE}, expected a list")
+        if MEMBERS_FILE.exists():
+            with open(MEMBERS_FILE, 'r') as f:
+                member_list = json.load(f)
+                for member in member_list:
+                    # Store by both DID and handle for easy lookup
+                    members[member['did']] = member
+                    members[member['handle']] = member
+            logger.info(f"Loaded {len(member_list)} members")
+        return members
     except Exception as e:
-        logger.error(f"Error loading processed mentions: {str(e)}")
-    
-    return processed
+        logger.error(f"Error loading members: {str(e)}")
+        return {}
 
+def is_member(author: str, members: Dict[str, Any]) -> bool:
+    """Check if an author (did or handle) is a member"""
+    return author in members
 
-def save_processed_mentions(mention_uris: List[str]) -> bool:
-    """
-    Add new mention URIs to the processed list and save to file
-    
-    Args:
-        mention_uris: List of mention URIs to mark as processed
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    if not setup_data_dir():
-        return False
-    
-    # Load existing processed mentions
-    processed = load_processed_mentions()
-    
-    # Add new mentions
-    processed.update(mention_uris)
-    
+def get_post_info(uri: str) -> Dict[str, Any]:
+    """Get post information from saved thread JSON files"""
     try:
+        # Extract did and rkey from URI (format: at://did:plc:xxx/app.bsky.feed.post/rkey)
+        uri_parts = uri.split('/')
+        did = uri_parts[2]
+        rkey = uri_parts[-1]
+        
+        # First try looking in individual post files
+        post_file = POSTS_DIR / "posts" / did / f"{rkey}.json"
+        if post_file.exists():
+            with open(post_file, 'r') as f:
+                return {
+                    'post': json.load(f),
+                    'thread': None  # Thread info not needed for this post
+                }
+        
+        # If not found, look in thread files
+        thread_file = POSTS_DIR / "threads" / did / f"{rkey}.json"
+        if thread_file.exists():
+            with open(thread_file, 'r') as f:
+                thread_data = json.load(f)
+                return {
+                    'post': thread_data['thread']['main_post'],
+                    'thread': thread_data['thread']
+                }
+                
+        # Look through all thread files as a last resort
+        for author_dir in (POSTS_DIR / "threads").glob('*'):
+            if not author_dir.is_dir():
+                continue
+                
+            for file_path in author_dir.glob('*.json'):
+                with open(file_path, 'r') as f:
+                    thread_data = json.load(f)
+                    thread = thread_data['thread']
+                    
+                    # Check main post
+                    if thread['main_post'] and thread['main_post']['uri'].endswith(rkey):
+                        return {
+                            'post': thread['main_post'],
+                            'thread': thread
+                        }
+                        
+                    # Check parent posts
+                    for post in thread['parent_posts']:
+                        if post['uri'].endswith(rkey):
+                            return {
+                                'post': post,
+                                'thread': thread
+                            }
+                            
+                    # Check reply posts
+                    for post in thread['reply_posts']:
+                        if post['uri'].endswith(rkey):
+                            return {
+                                'post': post,
+                                'thread': thread
+                            }
+                            
+        logger.warning(f"No thread found containing post: {uri}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error reading thread files: {str(e)}")
+        return None
+
+def get_root_post(thread: Dict[str, Any]) -> Dict[str, Any]:
+    """Get the root post from a thread structure"""
+    if thread['parent_posts']:
+        return thread['parent_posts'][0]  # First parent is the root
+    return thread['main_post']  # If no parents, main post is root
+
+def mark_post_processed(uri: str) -> bool:
+    """Mark a post as processed in the tracking file"""
+    try:
+        processed = set()
+        if PROCESSED_FILE.exists():
+            with open(PROCESSED_FILE, 'r') as f:
+                processed = set(json.load(f))
+        
+        processed.add(uri)
+        
         with open(PROCESSED_FILE, 'w') as f:
             json.dump(list(processed), f, indent=2)
-        logger.info(f"Saved {len(processed)} processed mentions")
         return True
     except Exception as e:
-        logger.error(f"Error saving processed mentions: {str(e)}")
+        logger.error(f"Error marking post as processed: {str(e)}")
         return False
-
 
 def filter_unprocessed_mentions(mention_uris: List[str]) -> List[str]:
     """
-    Filter out mentions that have already been processed
+    Filter mentions based on:
+    1. Not already processed
+    2. Root post author is a member
+    3. Mention author is a member
     
-    Args:
-        mention_uris: List of mention URIs to filter
-        
-    Returns:
-        List of unprocessed mention URIs
+    Returns list of unprocessed mention URIs
     """
-    # Load existing processed mentions
-    processed = load_processed_mentions()
+    # Load required data
+    members = load_members()
+    processed = set()
+    if PROCESSED_FILE.exists():
+        with open(PROCESSED_FILE, 'r') as f:
+            processed = set(json.load(f))
     
-    # Filter unprocessed mentions
-    unprocessed = [uri for uri in mention_uris if uri not in processed]
+    unprocessed = []
+    for uri in mention_uris:
+        try:
+            # Skip if already processed
+            if uri in processed:
+                logger.debug(f"Skipping processed mention: {uri}")
+                continue
+            
+            # Get thread containing this post
+            post_data = get_post_info(uri)
+            if not post_data:
+                logger.warning(f"No thread found for {uri}")
+                continue
+            
+            post = post_data['post']
+            thread = post_data['thread']
+            
+            # Check mention author is member
+            mention_author = post.get('author')
+            if not mention_author or not is_member(mention_author, members):
+                logger.info(f"Skipping mention from non-member: {mention_author}")
+                continue
+            
+            # Check root post author is member
+            root_post = get_root_post(thread)
+            if root_post:
+                root_author = root_post.get('author')
+                if not root_author or not is_member(root_author, members):
+                    logger.info(f"Skipping mention in thread started by non-member: {root_author}")
+                    continue
+            
+            # If we get here, the mention passes all checks
+            unprocessed.append(uri)
+            
+        except Exception as e:
+            logger.error(f"Error processing mention {uri}: {str(e)}")
     
-    logger.info(f"Found {len(unprocessed)} unprocessed mentions out of {len(mention_uris)} total")
+    logger.info(f"Found {len(unprocessed)} valid unprocessed mentions out of {len(mention_uris)} total")
     return unprocessed
-
 
 def extract_json_from_output(data: str) -> List[str]:
     """
@@ -129,7 +223,6 @@ def extract_json_from_output(data: str) -> List[str]:
             logger.warning(f"Found JSON-like pattern but failed to parse: {e}")
     
     return []
-
 
 def read_mention_uris_from_stdin() -> List[str]:
     """Read mention URIs from stdin, useful for piping from other scripts"""
@@ -174,20 +267,23 @@ def read_mention_uris_from_stdin() -> List[str]:
         logger.error(f"Error reading from stdin: {str(e)}")
         return []
 
-
 def main():
-    """Main function"""
-    logger.info("Starting unprocessed_mentions.py")
+    """Main function with example usage"""
+    logger.info("Starting filter_mentions.py")
     
-    # Read mention URIs from stdin
-    mention_uris = read_mention_uris_from_stdin()
+    # Ensure data directory exists
+    setup_data_dir()
     
-    if not mention_uris:
-        logger.warning("No mention URIs provided")
-        sys.exit(1)
+    # Example mentions - in real usage these would come from stdin
+    example_mentions = [
+        "at://did:plc:xyz/app.bsky.feed.post/123",  # Non-member post
+        "at://did:plc:evocjxmi5cps2thb4ya5jcji/app.bsky.feed.post/3lmc5zjc5ms23"  # Member post
+    ]
+    
+
     
     # Filter unprocessed mentions
-    unprocessed = filter_unprocessed_mentions(mention_uris)
+    unprocessed = filter_unprocessed_mentions(example_mentions)
     
     # Display results
     if unprocessed:
@@ -197,7 +293,6 @@ def main():
     else:
         logger.info("No unprocessed mentions found")
         print("[]")  # Empty JSON array
-
 
 if __name__ == "__main__":
     main()

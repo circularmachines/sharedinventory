@@ -171,6 +171,35 @@ def process_mentions(client, limit=20):
         logger.error(f"Error processing mentions: {str(e)}")
         return []
 
+def get_mentions() -> List[str]:
+    """Main interface function that returns a list of mention URIs"""
+    logger = setup_logging()
+    load_dotenv()
+    
+    try:
+        username = os.environ.get("BSKY_BOT_USERNAME")
+        password = os.environ.get("BSKY_BOT_PASSWORD")
+        
+        if not username or not password:
+            logger.error("Missing Bluesky credentials in environment variables")
+            return []
+            
+        client = BlueskyMentionsChecker(
+            username=username,
+            password=password
+        )
+        
+        if not client.authenticated:
+            logger.error("Failed to authenticate with Bluesky")
+            return []
+        
+        mentions = process_mentions(client)
+        return [mention['uri'] for mention in mentions if mention['uri']]
+        
+    except Exception as e:
+        logger.error(f"Error getting mentions: {str(e)}")
+        return []
+
 def main():
     """Main function to fetch and display mentions"""
     # Set up logging
