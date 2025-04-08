@@ -2,14 +2,6 @@
 """
 Standalone script to process downloaded videos from Bluesky posts.
 This script handles audio extraction, transcription, and frame extraction from videos.
-
-Usage:
-  python process_video.py <video_path> [--no-audio] [--no-frames] [--no-transcribe] [--output-dir DIRECTORY]
-
-Examples:
-  python process_video.py data/videos/video.mp4
-  python process_video.py data/videos/video.mp4 --no-transcribe
-  python process_video.py data/videos/video.mp4 --output-dir ./processed
 """
 import os
 import sys
@@ -17,17 +9,17 @@ import json
 import logging
 import tempfile
 import subprocess
-import argparse
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 from dotenv import load_dotenv
 import cv2
 from openai import AzureOpenAI
 
-def setup_logging():
+def setup_logging(debug=False):
     """Set up basic logging configuration"""
+    level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
         handlers=[logging.StreamHandler()]
     )
@@ -36,25 +28,26 @@ def setup_logging():
 class VideoProcessor:
     """Class to handle video processing tasks"""
     
-    def __init__(self, 
-                 openai_api_key: Optional[str] = None, 
-                 azure_endpoint: Optional[str] = None,
-                 api_version: Optional[str] = None,
-                 output_dir: str = "data/processed_videos"):
+    def __init__(self, output_dir: str = "data/processed_videos"):
         self.logger = logging.getLogger(__name__ + ".VideoProcessor")
-        self.openai_api_key = openai_api_key
-        self.azure_endpoint = azure_endpoint
-        self.api_version = api_version
         self.output_dir = output_dir
         
-        # Check if Azure OpenAI credentials are provided
+        # Load environment variables
+        load_dotenv()
+        
+        # Get Azure OpenAI credentials from environment
+        azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+        whisper_api_key = os.environ.get("WHISPER_API_KEY")
+        whisper_api_version = os.environ.get("WHISPER_API_VERSION")
+        
+        # Initialize Azure client if credentials are available
         self.azure_client = None
-        if openai_api_key and azure_endpoint and api_version:
+        if all([azure_endpoint, whisper_api_key, whisper_api_version]):
             self.logger.info("Azure OpenAI API credentials configured")
             self.azure_client = AzureOpenAI(
-                api_key=openai_api_key,
+                api_key=whisper_api_key,
                 azure_endpoint=azure_endpoint,
-                api_version=api_version
+                api_version=whisper_api_version
             )
         else:
             self.logger.warning("Azure OpenAI API credentials not provided, transcription will not work")
@@ -293,8 +286,12 @@ class VideoProcessor:
 
     def process_video(self, video_path: str, extract_audio: bool = True, 
                      transcribe: bool = True, extract_frames: bool = True,
-                     language: str = "en") -> Dict[str, Any]:
+                     language: str = "en", debug: bool = False) -> Dict[str, Any]:
         """Process a video file with options for each step"""
+        # Set up debug logging if requested
+        if debug:
+            logging.getLogger().setLevel(logging.DEBUG)
+        
         result = {
             "video_path": video_path,
             "audio_path": None,
@@ -304,6 +301,11 @@ class VideoProcessor:
         
         try:
             self.logger.info(f"Starting processing of video: {video_path}")
+            
+            # Check if video file exists
+            if not os.path.exists(video_path):
+                self.logger.error(f"Video file not found: {video_path}")
+                return result
             
             # 1. Extract audio if requested
             audio_path = None
@@ -337,7 +339,7 @@ class VideoProcessor:
             else:
                 self.logger.info("Frame extraction skipped")
             
-            # 4. Update transcript with frame information
+            # 4. Update transcript with frame information if available
             if transcript and frame_data["segment_frames"] and "segments" in transcript:
                 self.logger.info("Integrating frame information into transcript segments")
                 
@@ -370,112 +372,41 @@ class VideoProcessor:
                         self.logger.error(f"Error saving updated transcript: {str(e)}")
             
             self.logger.info(f"Video processing completed for: {video_path}")
+            
+            # Print the output paths for debugging
+            if debug:
+                print("\nProcessing Results:")
+                print(f"Input video: {video_path}")
+                print(f"Audio path: {result['audio_path'] or 'Not extracted'}")
+                print(f"Transcript path: {result['transcript_path'] or 'Not available'}")
+                print(f"Number of frames: {len(result['frame_paths'])}")
+                if result['frame_paths']:
+                    print("Sample frames:")
+                    for path in result['frame_paths'][:3]:
+                        print(f"  - {path}")
+            
             return result
             
         except Exception as e:
             self.logger.error(f"Error processing video: {str(e)}")
             return result
 
+def process_video(video_path: str, debug: bool = False) -> Dict[str, Any]:
+    """Main function to process a video that can be called from external code"""
+    processor = VideoProcessor()
+    return processor.process_video(video_path, debug=debug)
+
 def main():
-    """Main function to process a video file"""
-    # Set up argument parsing
-    parser = argparse.ArgumentParser(
-        description="Process a video file: extract audio, transcribe, and extract frames",
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    parser.add_argument("video_path", help="Path to the video file to process")
-    parser.add_argument("--no-audio", action="store_true", 
-                        help="Skip audio extraction")
-    parser.add_argument("--no-transcribe", action="store_true", 
-                        help="Skip transcription")
-    parser.add_argument("--no-frames", action="store_true", 
-                        help="Skip frame extraction")
-    parser.add_argument("--output-dir", default="data/processed_videos", 
-                        help="Base directory for output files (default: data/processed_videos)")
-    parser.add_argument("--language", default="en",
-                        help="Language code for transcription (default: en)")
-    parser.add_argument("--verbose", "-v", action="store_true", 
-                        help="Enable verbose logging")
+    """Main function demonstrating video processing"""
+    # Example usage with a hardcoded video path
+    video_path = "data/videos/1744099622_video.mp4"
     
-    args = parser.parse_args()
+    # Process the video with all features enabled and debug output
+    result = process_video(video_path, debug=True)
     
-    # Set up logging
-    logger = setup_logging()
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-    
-    # Load environment variables
-    load_dotenv()
-    
-    # Check if video file exists
-    if not os.path.exists(args.video_path):
-        logger.error(f"Video file not found: {args.video_path}")
-        print(f"Error: Video file not found at {args.video_path}")
-        sys.exit(1)
-    
-    # Get Azure OpenAI credentials from environment
-    azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-    whisper_api_key = os.environ.get("WHISPER_API_KEY")
-    whisper_api_version = os.environ.get("WHISPER_API_VERSION")
-    
-    if not all([azure_endpoint, whisper_api_key, whisper_api_version]) and not args.no_transcribe:
-        logger.warning("Azure OpenAI credentials not found in environment, transcription will be skipped")
-    
-    # Initialize video processor
-    processor = VideoProcessor(
-        openai_api_key=whisper_api_key,
-        azure_endpoint=azure_endpoint,
-        api_version=whisper_api_version,
-        output_dir=args.output_dir
-    )
-    
-    # Process the video with provided options
-    logger.info(f"Starting video processing for: {args.video_path}")
-    result = processor.process_video(
-        args.video_path, 
-        extract_audio=not args.no_audio,
-        transcribe=not args.no_transcribe,
-        extract_frames=not args.no_frames,
-        language=args.language
-    )
-    
-    # Print results
-    print("\nVideo Processing Results:")
-    print(f"Input video: {args.video_path}")
-    
-    if not args.no_audio:
-        print(f"Audio extracted to: {result['audio_path'] or 'Failed'}")
-    else:
-        print("Audio extraction: Skipped")
-    
-    if not args.no_transcribe:
-        print(f"Transcript saved to: {result['transcript_path'] or 'Not available'}")
-    else:
-        print("Transcription: Skipped")
-    
-    if not args.no_frames:
-        print(f"Extracted {len(result['frame_paths'])} frames")
-        if result['frame_paths']:
-            print(f"Sample frames:")
-            for i, frame_path in enumerate(result['frame_paths'][:3]):
-                print(f"  - {frame_path}")
-            
-            if len(result['frame_paths']) > 3:
-                print(f"  - ... ({len(result['frame_paths']) - 3} more frames)")
-    else:
-        print("Frame extraction: Skipped")
-    
-    # Return JSON output for easier processing by other scripts
-    output = {
-        "video_path": args.video_path,
-        "audio_path": result["audio_path"],
-        "transcript_path": result["transcript_path"],
-        "frame_paths": result["frame_paths"]
-    }
-    
-    # Print just the output paths in JSON format for piping to other scripts
+    # Print JSON output for programmatic use
     print("\nJSON output:")
-    print(json.dumps(output))
+    print(json.dumps(result))
 
 if __name__ == "__main__":
     main()

@@ -10,11 +10,11 @@ import sys
 import logging
 import time
 import json
-import argparse
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from dotenv import load_dotenv
 from atproto import Client
+import requests
 
 def setup_logging(debug=False):
     """Set up basic logging configuration"""
@@ -27,18 +27,25 @@ def setup_logging(debug=False):
     return logging.getLogger(__name__)
 
 class BlueskyThreadFetcher:
-    def __init__(self, username: str, password: str, max_retries: int = 3, retry_delay: int = 5):
+    def __init__(self, 
+                 username: str = None, 
+                 password: str = None, 
+                 max_retries: int = 3, 
+                 retry_delay: int = 5,
+                 public_api_url: str = "https://public.api.bsky.app/xrpc"):
         self.logger = logging.getLogger(__name__)
         self.username = username
         self.password = password
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.public_api_url = public_api_url
         self.client = Client()
         self.authenticated = False
         self.did = None
         
-        # Authenticate when creating the instance
-        self._authenticate()
+        # Only authenticate if credentials are provided
+        if username and password:
+            self._authenticate()
     
     def _authenticate(self) -> bool:
         """Authenticate with the Bluesky API"""
@@ -61,10 +68,6 @@ class BlueskyThreadFetcher:
     
     def get_post(self, uri: str) -> Optional[Any]:
         """Fetch a specific post by URI"""
-        if not self.authenticated:
-            self.logger.error("Cannot fetch post: Not authenticated")
-            return None
-        
         try:
             self.logger.info(f"Fetching post: {uri}")
             
@@ -94,14 +97,24 @@ class BlueskyThreadFetcher:
     
     def get_post_thread(self, uri: str, depth: int = 5, parent_height: int = 20) -> Optional[Any]:
         """Fetch the complete thread for a post including parents and replies"""
-        if not self.authenticated:
-            self.logger.error("Cannot fetch post thread: Not authenticated")
-            return None
-        
         try:
             self.logger.info(f"Fetching thread for post: {uri} (depth={depth}, parent_height={parent_height})")
             
-            # Get post thread using XRPC API
+            # Try using the public API first
+            if not self.authenticated:
+                try:
+                    return self._get_thread_via_public_api(uri, depth, parent_height)
+                except Exception as e:
+                    self.logger.warning(f"Public API request failed: {str(e)}")
+                    self.logger.info("Will attempt to use authenticated client if credentials provided")
+                    
+                    # If credentials aren't provided, we can't proceed
+                    if not self.username or not self.password:
+                        raise Exception("Authentication required for this post and no credentials provided")
+                    
+                    # Otherwise, fall through to authenticated method
+            
+            # Use authenticated client as fallback or if already authenticated
             response = self.client.app.bsky.feed.get_post_thread({
                 'uri': uri,
                 'depth': depth,
@@ -112,12 +125,47 @@ class BlueskyThreadFetcher:
                 self.logger.warning("No thread returned from API")
                 return None
                 
-            self.logger.debug(f"Successfully fetched post thread")
+            self.logger.debug(f"Successfully fetched post thread using authenticated client")
             return response
             
         except Exception as e:
             self.logger.error(f"Failed to fetch post thread: {str(e)}")
             return None
+            
+    def _get_thread_via_public_api(self, uri: str, depth: int = 5, parent_height: int = 20) -> Optional[Any]:
+        """Fetch thread using the public API endpoint"""
+        self.logger.info(f"Attempting to fetch thread via public API: {uri}")
+        
+        try:
+            # Build request URL and parameters
+            endpoint = f"{self.public_api_url}/app.bsky.feed.getPostThread"
+            params = {
+                "uri": uri,
+                "depth": depth,
+                "parentHeight": parent_height
+            }
+            
+            # Make the request
+            response = requests.get(endpoint, params=params)
+            response.raise_for_status()
+            
+            # Convert the JSON response to an object that matches the atproto client's response structure
+            data = response.json()
+            self.logger.debug("Successfully fetched thread from public API")
+            
+            # Convert to a compatible format with atproto client
+            from types import SimpleNamespace
+            return json.loads(json.dumps(data), object_hook=lambda d: SimpleNamespace(**d))
+            
+        except requests.exceptions.HTTPError as e:
+            self.logger.error(f"HTTP error fetching thread from public API: {e}")
+            if e.response is not None:
+                self.logger.error(f"Response status code: {e.response.status_code}")
+                self.logger.error(f"Response body: {e.response.text}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to fetch thread from public API: {str(e)}")
+            raise
 
 def format_time(timestamp):
     """Format a timestamp into a readable date/time"""
@@ -285,57 +333,59 @@ def print_thread_summary(thread_structure, detailed=False):
     
     print("="*80 + "\n")
 
-def main():
-    """Main function"""
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Retrieve a complete Bluesky post thread")
-    parser.add_argument("--uri", "-u", help="URI of the post to analyze", required=True)
-    parser.add_argument("--depth", "-d", type=int, default=5, help="Depth of replies to fetch")
-    parser.add_argument("--parent-height", "-p", type=int, default=20, help="Height of parent thread to fetch")
-    parser.add_argument("--detailed", "-D", action="store_true", help="Show detailed output")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    args = parser.parse_args()
+def get_thread(uri: str, debug: bool = False) -> Dict[str, Any]:
+    """Main function to retrieve a thread that can be called from external code"""
+    logger = setup_logging(debug)
     
-    # Set up logging
-    logger = setup_logging(args.debug)
-    
-    # Load environment variables
-    load_dotenv()
-
-    # Initialize Bluesky client
     try:
-        # Use BSKY_BOT_USERNAME and BSKY_BOT_PASSWORD as specified in instructions
-        username = os.environ.get("BSKY_BOT_USERNAME")
-        password = os.environ.get("BSKY_BOT_PASSWORD")
-        
-        if not username or not password:
-            logger.error("Missing Bluesky credentials in environment variables")
-            logger.error("Please set BSKY_BOT_USERNAME and BSKY_BOT_PASSWORD in .env file")
-            sys.exit(1)
-            
-        client = BlueskyThreadFetcher(
-            username=username,
-            password=password
-        )
-        
-        if not client.authenticated:
-            logger.error("Failed to authenticate with Bluesky")
-            sys.exit(1)
+        # Create client without authentication for public posts
+        client = BlueskyThreadFetcher()
         
         # Get post thread
-        thread_response = client.get_post_thread(args.uri, args.depth, args.parent_height)
+        thread_response = client.get_post_thread(uri, depth=5, parent_height=20)
         
         if not thread_response:
-            print(f"No thread found for post URI: {args.uri}")
-            sys.exit(1)
+            logger.error(f"No thread found for post URI: {uri}")
+            return {
+                'success': False,
+                'error': 'Thread not found',
+                'thread_structure': None
+            }
         
-        # Extract and display thread structure
+        # Extract thread structure
         thread_structure = extract_thread_structure(thread_response)
-        print_thread_summary(thread_structure, args.detailed)
+        
+        return {
+            'success': True,
+            'thread_structure': thread_structure
+        }
         
     except Exception as e:
         logger.error(f"Error: {str(e)}")
-        sys.exit(1)
+        return {
+            'success': False,
+            'error': str(e),
+            'thread_structure': None
+        }
+
+def main():
+    """Main function for direct script execution"""
+    # Set up logging
+    logger = setup_logging(debug=True)
+    
+    # Get post URI from command line or use default example
+    post_uri = "at://did:plc:evocjxmi5cps2thb4ya5jcji/app.bsky.feed.post/3llxwrggehi26"
+    if len(sys.argv) > 1:
+        post_uri = sys.argv[1]
+    
+    # Fetch the thread
+    result = get_thread(post_uri, debug=True)
+    
+    if result['success']:
+        # Print thread details
+        print_thread_summary(result['thread_structure'], detailed=True)
+    else:
+        print(f"Error: {result.get('error', 'Unknown error')}")
 
 if __name__ == "__main__":
     main()
